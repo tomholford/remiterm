@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"remiterm/internal/api"
 )
@@ -81,7 +82,38 @@ func (d *DB) ListMessages(ctx context.Context, beforeID string, limit int) ([]ap
 		return nil, fmt.Errorf("list messages before %s: %w", beforeID, err)
 	}
 	defer func() { _ = rows.Close() }()
-	return scanMessagesOldestFirst(rows)
+	msgs, err := scanMessagesOldestFirst(rows)
+	if err != nil {
+		return nil, err
+	}
+	if !pageAdjoinsCursor(beforeID, msgs) {
+		return nil, nil
+	}
+	return msgs, nil
+}
+
+// pageAdjoinsCursor reports whether oldest-first msgs can serve as the next
+// older page before beforeID. A numeric id jump larger than one API page means
+// the cache does not hold the adjoining page (a timeline hole); the caller
+// should hit the API. Non-numeric ids cannot be checked and are allowed.
+func pageAdjoinsCursor(beforeID string, msgs []api.Message) bool {
+	if len(msgs) == 0 {
+		return true
+	}
+	before, beforeOK := parseID(beforeID)
+	newest, newestOK := parseID(msgs[len(msgs)-1].ID)
+	if !beforeOK || !newestOK {
+		return true
+	}
+	if before <= newest {
+		return true
+	}
+	return before-newest <= defaultPage
+}
+
+func parseID(id string) (int64, bool) {
+	n, err := strconv.ParseInt(id, 10, 64)
+	return n, err == nil
 }
 
 func scanMessagesOldestFirst(rows *sql.Rows) ([]api.Message, error) {
