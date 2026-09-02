@@ -392,8 +392,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.maybePrefetchOlder()
 		}
 
-		added := m.store.mergeAPI(msg.res, false)
+		keepID := m.store.idAt(m.selected)
+		added := m.store.mergeLatest(msg.res)
 		m.persistMessages(msg.res.Messages)
+		if keepID != "" {
+			if idx := m.store.indexOf(keepID); idx >= 0 {
+				m.selected = idx
+			} else if m.store.len() > 0 && m.selected >= m.store.len() {
+				m.selected = m.store.len() - 1
+			}
+		}
 		if !wasBottom && added > 0 {
 			m.pendingNew += added
 		}

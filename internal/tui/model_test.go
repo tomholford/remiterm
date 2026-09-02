@@ -852,6 +852,95 @@ func TestOlderPollErrorWithoutCacheKeepsError(t *testing.T) {
 	}
 }
 
+func TestStaleCacheGapLiveTailPrefetch(t *testing.T) {
+	db, err := cache.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	ctx := context.Background()
+	save := func(from, to int) {
+		t.Helper()
+		for i := from; i <= to; i++ {
+			msg := api.Message{ID: fmt.Sprintf("%d", i), Text: "x", CreatedAt: int64(i)}
+			if err = db.SaveMessage(ctx, msg); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	save(1, 80)
+	save(500, 530)
+
+	m := New(nil, time.Hour)
+	m.AttachCache(db)
+	if m.store.len() < 80 {
+		t.Fatalf("seed len %d", m.store.len())
+	}
+
+	var live []api.Message
+	for i := 500; i <= 530; i++ {
+		live = append(live, api.Message{ID: fmt.Sprintf("%d", i), Text: "x", CreatedAt: int64(i)})
+	}
+	next, _ := m.Update(pollMsg{
+		res: api.ListMessagesResponse{Messages: live, HasMore: true, NextCursor: "500"},
+	})
+	m = next.(Model)
+	if m.store.len() != 31 || m.store.idAt(0) != "500" {
+		t.Fatalf("live tail %+v len %d", m.store.idAt(0), m.store.len())
+	}
+	if m.store.cursor != "500" {
+		t.Fatalf("cursor %q want 500 (not the stale cluster)", m.store.cursor)
+	}
+	if m.store.idAt(0) == "1" {
+		t.Fatal("stale cluster must not stay in the store")
+	}
+
+	m.focus = focusMessages
+	m.width = 80
+	m.height = 40
+	m.layout()
+	m.redraw()
+	m.viewport.GotoTop()
+	if !m.canLoadOlder(false) {
+		t.Fatal("live tail should still have older pages")
+	}
+	if m.maybePrefetchOlder() == nil {
+		t.Fatal("near older edge of live tail should prefetch")
+	}
+	if !m.loadingOld {
+		t.Fatal("loadingOld")
+	}
+
+	var older []api.Message
+	for i := 450; i <= 499; i++ {
+		older = append(older, api.Message{ID: fmt.Sprintf("%d", i), Text: "x", CreatedAt: int64(i)})
+	}
+	next, _ = m.Update(pollMsg{
+		older: true,
+		res:   api.ListMessagesResponse{Messages: older, HasMore: true, NextCursor: "450"},
+	})
+	m = next.(Model)
+	if m.store.idAt(0) != "450" {
+		t.Fatalf("after fill oldest %q", m.store.idAt(0))
+	}
+	if m.store.indexOf("1") >= 0 || m.store.indexOf("80") >= 0 {
+		t.Fatal("old cluster must stay out of the live tail")
+	}
+
+	m.loadingOld = true
+	next, _ = m.Update(pollMsg{older: true, err: errors.New("offline")})
+	m = next.(Model)
+	if m.store.indexOf("1") >= 0 {
+		t.Fatal("cache fallback must not jump the hole")
+	}
+	if m.store.idAt(0) != "450" {
+		t.Fatalf("oldest after cache miss %q", m.store.idAt(0))
+	}
+	if m.errMsg != "offline" {
+		t.Fatalf("errMsg %q", m.errMsg)
+	}
+}
+
 func TestPersistErrorDoesNotFailPoll(t *testing.T) {
 	db, err := cache.OpenMemory()
 	if err != nil {
