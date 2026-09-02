@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -107,6 +108,138 @@ func TestMessageStoreMergeAndOrder(t *testing.T) {
 	if s.hasMore {
 		t.Fatal("expected hasMore false")
 	}
+}
+
+func TestMessageStoreMergeLatestClipsTail(t *testing.T) {
+	ids := func(s *messageStore) []string {
+		out := make([]string, s.len())
+		for i := 0; i < s.len(); i++ {
+			out[i] = s.idAt(i)
+		}
+		return out
+	}
+
+	t.Run("empty store takes the latest page", func(t *testing.T) {
+		s := newMessageStore()
+		var page []api.Message
+		for i := 100; i <= 110; i++ {
+			page = append(page, api.Message{ID: itoa(i), CreatedAt: int64(i)})
+		}
+		s.mergeLatest(api.ListMessagesResponse{Messages: page, HasMore: true, NextCursor: "100"})
+		if !s.liveTrusted {
+			t.Fatal("liveTrusted")
+		}
+		if s.idAt(0) != "100" || s.idAt(s.len()-1) != "110" || s.len() != 11 {
+			t.Fatalf("%+v", ids(s))
+		}
+		if s.cursor != "100" {
+			t.Fatalf("cursor %q", s.cursor)
+		}
+		if !s.hasMore {
+			t.Fatal("hasMore")
+		}
+	})
+
+	t.Run("overlap clips seed older than the page", func(t *testing.T) {
+		s := newMessageStore()
+		var seed []api.Message
+		for i := 1; i <= 10; i++ {
+			seed = append(seed, api.Message{ID: itoa(i), CreatedAt: int64(i)})
+		}
+		for i := 100; i <= 110; i++ {
+			seed = append(seed, api.Message{ID: itoa(i), CreatedAt: int64(i)})
+		}
+		s.mergeAPI(api.ListMessagesResponse{Messages: seed, HasMore: true}, false)
+		var page []api.Message
+		for i := 100; i <= 110; i++ {
+			page = append(page, api.Message{ID: itoa(i), CreatedAt: int64(i)})
+		}
+		s.mergeLatest(api.ListMessagesResponse{Messages: page, HasMore: true, NextCursor: "100"})
+		if s.len() != 11 || s.idAt(0) != "100" {
+			t.Fatalf("%+v", ids(s))
+		}
+		if s.cursor != "100" {
+			t.Fatalf("cursor %q", s.cursor)
+		}
+	})
+
+	t.Run("overlapping latest page drops older seed", func(t *testing.T) {
+		s := newMessageStore()
+		var seed []api.Message
+		for i := 1; i <= 10; i++ {
+			seed = append(seed, api.Message{ID: itoa(i), CreatedAt: int64(i)})
+		}
+		s.mergeAPI(api.ListMessagesResponse{Messages: seed, HasMore: true}, false)
+		var page []api.Message
+		for i := 5; i <= 10; i++ {
+			page = append(page, api.Message{ID: itoa(i), CreatedAt: int64(i)})
+		}
+		s.mergeLatest(api.ListMessagesResponse{Messages: page, HasMore: true, NextCursor: "5"})
+		if s.len() != 6 || s.idAt(0) != "5" {
+			t.Fatalf("%+v", ids(s))
+		}
+	})
+
+	t.Run("second latest poll does not clip backfill", func(t *testing.T) {
+		s := newMessageStore()
+		var seed []api.Message
+		for i := 1; i <= 10; i++ {
+			seed = append(seed, api.Message{ID: itoa(i), CreatedAt: int64(i)})
+		}
+		s.mergeAPI(api.ListMessagesResponse{Messages: seed, HasMore: true}, false)
+		s.mergeLatest(api.ListMessagesResponse{
+			Messages: []api.Message{
+				{ID: "5", CreatedAt: 5},
+				{ID: "6", CreatedAt: 6},
+				{ID: "7", CreatedAt: 7},
+				{ID: "8", CreatedAt: 8},
+				{ID: "9", CreatedAt: 9},
+				{ID: "10", CreatedAt: 10},
+			},
+			HasMore:    true,
+			NextCursor: "5",
+		})
+		s.mergeLatest(api.ListMessagesResponse{
+			Messages: []api.Message{
+				{ID: "6", CreatedAt: 6},
+				{ID: "7", CreatedAt: 7},
+				{ID: "8", CreatedAt: 8},
+				{ID: "9", CreatedAt: 9},
+				{ID: "10", CreatedAt: 10},
+				{ID: "11", CreatedAt: 11},
+			},
+			HasMore:    true,
+			NextCursor: "6",
+		})
+		if s.idAt(0) != "5" {
+			t.Fatalf("kept backfill oldest %q want 5: %+v", s.idAt(0), ids(s))
+		}
+		if s.idAt(s.len()-1) != "11" {
+			t.Fatalf("newest %q: %+v", s.idAt(s.len()-1), ids(s))
+		}
+	})
+
+	t.Run("non-numeric ids overlap without panic", func(t *testing.T) {
+		s := newMessageStore()
+		s.mergeAPI(api.ListMessagesResponse{
+			Messages: []api.Message{
+				{ID: "old-a", CreatedAt: 1},
+				{ID: "old-b", CreatedAt: 2},
+			},
+			HasMore: true,
+		}, false)
+		s.mergeLatest(api.ListMessagesResponse{
+			Messages: []api.Message{{ID: "old-b", CreatedAt: 2}},
+			HasMore:  true,
+		})
+		if s.len() != 1 || s.idAt(0) != "old-b" {
+			t.Fatalf("%+v", ids(s))
+		}
+	})
+}
+
+func itoa(n int) string {
+	return strconv.Itoa(n)
 }
 
 func TestUpsertOwnPost(t *testing.T) {
