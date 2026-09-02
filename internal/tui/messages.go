@@ -42,10 +42,11 @@ func messageTime(ts int64) time.Time {
 
 // messageStore keeps messages ordered oldest→newest, keyed by id.
 type messageStore struct {
-	byID    map[string]api.Message
-	order   []string // oldest first
-	hasMore bool
-	cursor  string // next_cursor for older pages
+	byID        map[string]api.Message
+	order       []string // oldest first
+	hasMore     bool
+	cursor      string // next_cursor for older pages
+	liveTrusted bool   // true after the first live (latest-page) clip
 }
 
 func newMessageStore() *messageStore {
@@ -106,6 +107,105 @@ func (s *messageStore) mergeAPI(res api.ListMessagesResponse, olderPage bool) in
 	}
 	hm := res.HasMore
 	return s.merge(likes, &hm, res.NextCursor, olderPage)
+}
+
+// mergeLatest merges a newest-page poll and clips the in-memory list to that
+// page's live tail the first time. A page with no shared ids is a seam
+// (replace the store with the page). Overlap still drops rows older than the
+// page's oldest, so a cache bag that straddles a hole cannot hide it from
+// backscroll. Later latest polls only append; they must not clip backfill.
+func (s *messageStore) mergeLatest(res api.ListMessagesResponse) int {
+	overlap := false
+	for i := range res.Messages {
+		id := res.Messages[i].ID
+		if id == "" {
+			continue
+		}
+		if _, ok := s.byID[id]; ok {
+			overlap = true
+			break
+		}
+	}
+	added := s.mergeAPI(res, false)
+	if s.liveTrusted || len(res.Messages) == 0 {
+		return added
+	}
+	cut := oldestMessage(res.Messages)
+	if cut.ID == "" {
+		return added
+	}
+	if !overlap {
+		s.retainIDs(messageIDs(res.Messages))
+	} else {
+		s.dropOlderThan(cut.ID)
+	}
+	s.liveTrusted = true
+	if res.NextCursor != "" {
+		s.cursor = res.NextCursor
+	} else if s.len() > 0 {
+		s.cursor = s.idAt(0)
+	}
+	s.hasMore = res.HasMore
+	return added
+}
+
+func oldestMessage(msgs []api.Message) api.Message {
+	var best api.Message
+	for i := range msgs {
+		m := msgs[i]
+		if m.ID == "" {
+			continue
+		}
+		if best.ID == "" || lessMessage(m, best) {
+			best = m
+		}
+	}
+	return best
+}
+
+func messageIDs(msgs []api.Message) []string {
+	out := make([]string, 0, len(msgs))
+	for i := range msgs {
+		if msgs[i].ID != "" {
+			out = append(out, msgs[i].ID)
+		}
+	}
+	return out
+}
+
+func (s *messageStore) retainIDs(ids []string) {
+	if s == nil {
+		return
+	}
+	keep := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			keep[id] = struct{}{}
+		}
+	}
+	order := make([]string, 0, len(keep))
+	for _, id := range s.order {
+		if _, ok := keep[id]; ok {
+			order = append(order, id)
+		} else {
+			delete(s.byID, id)
+		}
+	}
+	s.order = order
+}
+
+func (s *messageStore) dropOlderThan(id string) {
+	if s == nil || id == "" {
+		return
+	}
+	idx := s.indexOf(id)
+	if idx <= 0 {
+		return
+	}
+	for _, oid := range s.order[:idx] {
+		delete(s.byID, oid)
+	}
+	s.order = append([]string(nil), s.order[idx:]...)
 }
 
 func (s *messageStore) upsert(msg api.Message) {
