@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"remiterm/internal/api"
@@ -125,6 +126,88 @@ func TestListMessagesBeforeID(t *testing.T) {
 	if len(got) != 0 {
 		t.Fatalf("unknown cursor: %+v", got)
 	}
+}
+
+func TestListMessagesStopsAtHole(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	seed := func(t *testing.T, msgs []api.Message) *DB {
+		t.Helper()
+		db, err := OpenMemory()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		for _, m := range msgs {
+			if err = db.SaveMessage(ctx, m); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return db
+	}
+	ids := func(msgs []api.Message) []string {
+		out := make([]string, len(msgs))
+		for i, m := range msgs {
+			out[i] = m.ID
+		}
+		return out
+	}
+
+	t.Run("contiguous older page", func(t *testing.T) {
+		t.Parallel()
+		var msgs []api.Message
+		for i := 5; i <= 10; i++ {
+			msgs = append(msgs, api.Message{ID: itoa(i), CreatedAt: int64(i * 10)})
+		}
+		got, err := seed(t, msgs).ListMessages(ctx, "10", 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 5 || got[0].ID != "5" || got[4].ID != "9" {
+			t.Fatalf("contiguous before 10: %+v", ids(got))
+		}
+	})
+
+	t.Run("hole larger than a page is a cache miss", func(t *testing.T) {
+		t.Parallel()
+		var msgs []api.Message
+		for i := 1; i <= 10; i++ {
+			msgs = append(msgs, api.Message{ID: itoa(i), CreatedAt: int64(i * 10)})
+		}
+		for i := 100; i <= 110; i++ {
+			msgs = append(msgs, api.Message{ID: itoa(i), CreatedAt: int64(i * 10)})
+		}
+		got, err := seed(t, msgs).ListMessages(ctx, "100", 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("hole before 100: %+v", ids(got))
+		}
+	})
+
+	t.Run("single missing id still returns the page", func(t *testing.T) {
+		t.Parallel()
+		var msgs []api.Message
+		for i := 1; i <= 10; i++ {
+			if i == 8 {
+				continue
+			}
+			msgs = append(msgs, api.Message{ID: itoa(i), CreatedAt: int64(i * 10)})
+		}
+		got, err := seed(t, msgs).ListMessages(ctx, "10", 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 8 || got[len(got)-1].ID != "9" {
+			t.Fatalf("skip 8 before 10: %+v", ids(got))
+		}
+	})
+}
+
+func itoa(n int) string {
+	return strconv.Itoa(n)
 }
 
 func TestSaveAfterCloseDoesNotPanic(t *testing.T) {
