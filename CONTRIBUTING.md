@@ -84,7 +84,7 @@ goreleaser check
 goreleaser release --snapshot --clean --skip=publish
 ```
 
-The tap lives in a separate repo. The default `GITHUB_TOKEN` cannot write it; set repo secret `HOMEBREW_TAP_TOKEN` to a fine-grained PAT with Contents: Read and write on `tomholford/homebrew-tap`. Prerelease tags (`v0.1.0-rc.1`) skip the tap upload (`skip_upload: auto`).
+The tap lives in a separate repo. The default `GITHUB_TOKEN` cannot write it; set repo secret `HOMEBREW_TAP_TOKEN` to a fine-grained PAT with Contents: Read and write on `tomholford/homebrew-tap`. GoReleaser still emits a deprecated `postflight` block; `ops/rewrite-cask-postflight.rb` converts it to `postflight_steps` and the release workflow pushes that to the tap. Prerelease tags (`v0.1.0-rc.1`) skip the tap upload.
 
 ## Inspiration
 

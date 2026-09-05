@@ -57,6 +57,10 @@ release:
 # Prebuilt binaries belong in a cask (Homebrew formulas build from source).
 # Unsigned macOS binaries are quarantined; the post-install hook strips that
 # so first launch is not "damaged and cannot be opened" on Apple Silicon.
+#
+# GoReleaser still wraps this hook in a deprecated `postflight` block. We
+# rewrite it to `postflight_steps` in ops/rewrite-cask-postflight.rb and
+# publish the tap ourselves (skip_upload: true).
 homebrew_casks:
   - name: remiterm
     ids:
@@ -71,7 +75,7 @@ homebrew_casks:
     directory: Casks
     homepage: "https://github.com/tomholford/remiterm"
     description: "RemiliaNET global chat in your terminal"
-    skip_upload: auto
+    skip_upload: true
     hooks:
       post:
         install: |

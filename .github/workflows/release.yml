@@ -8,6 +8,8 @@ on:
     paths:
       - ".goreleaser.yaml"
       - ".github/workflows/release.yml"
+      - "ops/rewrite-cask-postflight.rb"
+      - "ops/publish-homebrew-cask.sh"
       - "cmd/remiterm/**"
       - "go.mod"
       - "go.sum"
@@ -33,6 +35,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Test Homebrew cask rewrite
+        run: ruby ops/rewrite-cask-postflight.rb --test
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
@@ -42,3 +47,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Rewrite Homebrew cask to postflight_steps
+        run: ruby ops/rewrite-cask-postflight.rb dist/homebrew/Casks/remiterm.rb
+
+      - name: Publish Homebrew tap
+        if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: sh ops/publish-homebrew-cask.sh
